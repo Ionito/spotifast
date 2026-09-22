@@ -5585,6 +5585,90 @@ mod tests {
         app.backend.shutdown();
     }
 
+    /// "Next up" plays from the current context, not from a list Spotifast
+    /// can rewrite, so it is never a drop target: dropping a queued row on
+    /// it must not move or insert anything, even though the row sits inside
+    /// the same scrollable list as "Playing next".
+    #[test]
+    fn dropping_a_queued_row_on_next_up_does_nothing() {
+        let (ctx, mut app) = accessible_app("queue-reorder-next-up-not-a-target");
+        app.show_queue_panel = true;
+        let uris = seed_queued_songs(&mut app);
+        for _ in 0..3 {
+            frame_events(&ctx, &mut app, vec![]);
+        }
+        let tree = accessible_frame(&ctx, &mut app, vec![]);
+        // "Otomo" is also a demo library track shown elsewhere on the page
+        // behind the queue side panel, so match on the queue panel's own
+        // on-screen column (it opens flush against the right edge) rather
+        // than the first node with a matching label.
+        let row_rect = |name: &str| {
+            let prefix = format!("Play {name},");
+            let bounds = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| {
+                    node.role() == egui::accesskit::Role::Button
+                        && node.label().is_some_and(|text| text.starts_with(&prefix))
+                        && node
+                            .bounds()
+                            .is_some_and(|bounds| bounds.x0 >= 900.0 && bounds.y1 <= 800.0)
+                })
+                .unwrap_or_else(|| panic!("missing on-screen queue row {name}"))
+                .1
+                .bounds()
+                .unwrap();
+            egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+            )
+        };
+        let start_row = row_rect("Queued 0");
+        let start = egui::pos2(start_row.left() + 80.0, start_row.center().y);
+        // "Otomo" is the first row of "Next up", from the default demo
+        // queue past the three manually queued rows seeded above.
+        let next_up_row = row_rect("Otomo");
+        let end = egui::pos2(next_up_row.left() + 130.0, next_up_row.center().y);
+
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(start + egui::vec2(15.0, -10.0))],
+        );
+        egui::DragAndDrop::payload::<DragTrack>(&ctx).expect("a reorderable queue row drags");
+
+        frame_events(&ctx, &mut app, vec![egui::Event::PointerMoved(end)]);
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+
+        assert_eq!(
+            app.manual_queue, uris,
+            "Next up is never a drop target: nothing moves or gets inserted"
+        );
+        app.backend.shutdown();
+    }
+
     /// Dropping a song from elsewhere at a specific row in "Playing next"
     /// inserts it there instead of always appending at the end.
     #[test]

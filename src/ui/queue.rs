@@ -321,16 +321,26 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
         // Calculate the nearest drop slot from fixed row height because
         // virtualized rows are not all available during drawing.
         let list_top = ui.cursor().top();
+        // Bound the hit test to Playing next's own rows, plus half a row of
+        // trailing slack for the append-at-the-end slot. The scroll area's
+        // clip rect also covers Next up below, which is never a drop target.
+        let section_rect = egui::Rect::from_min_max(
+            egui::pos2(ui.clip_rect().left(), list_top),
+            egui::pos2(
+                ui.clip_rect().right(),
+                list_top + (queued_len as f32 + 0.5) * (row_height + gap),
+            ),
+        );
         let move_slot = reorderable
             .then(|| {
                 egui::DragAndDrop::payload::<DragTrack>(ui.ctx())?;
-                if !ui.rect_contains_pointer(ui.clip_rect()) {
+                if !ui.rect_contains_pointer(section_rect) {
                     return None;
                 }
                 let pos = ui
                     .ctx()
                     .pointer_latest_pos()
-                    .filter(|pos| ui.clip_rect().contains(*pos))?;
+                    .filter(|pos| section_rect.contains(*pos))?;
                 let row = (pos.y - list_top) / (row_height + gap);
                 (row >= 0.0).then(|| (row.round() as usize).min(queued_len))
             })
