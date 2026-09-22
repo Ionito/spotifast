@@ -662,11 +662,30 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                 }
                 // Local playback is the only target that can be reordered
                 // or inserted into positionally; simulate it active so the
-                // drag-to-reorder behaviour is reviewable here.
+                // drag-to-reorder behaviour is reviewable here. Carry over
+                // the displayed track's own metadata rather than a bare
+                // default, so the player bar and top bar render the same
+                // as without this override.
                 app.local_ready = true;
+                let now = app.now_playing();
                 app.local.track = Some(crate::player::LocalTrack {
-                    uri: app.now_playing().map(|now| now.uri).unwrap_or_default(),
-                    ..Default::default()
+                    uri: now.as_ref().map(|now| now.uri.clone()).unwrap_or_default(),
+                    title: now
+                        .as_ref()
+                        .map(|now| now.title.clone())
+                        .unwrap_or_default(),
+                    artists: now
+                        .as_ref()
+                        .map(|now| now.artists.clone())
+                        .unwrap_or_default(),
+                    album: now
+                        .as_ref()
+                        .map(|now| now.album_name.clone())
+                        .unwrap_or_default(),
+                    art_url: now.as_ref().and_then(|now| now.art_url.clone()),
+                    art_small_url: now.as_ref().and_then(|now| now.art_small.clone()),
+                    duration_ms: now.as_ref().map(|now| now.duration_ms).unwrap_or_default(),
+                    is_episode: now.as_ref().is_some_and(|now| now.show_id.is_some()),
                 });
                 app.local.playback = crate::player::Playback::Paused;
             }
