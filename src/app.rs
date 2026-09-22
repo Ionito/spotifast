@@ -7949,13 +7949,17 @@ impl App {
                         continue;
                     }
                     let uri = item.uri().to_string();
-                    self.pending_queue_adds.push((uri.clone(), Instant::now()));
-                    let at = position + inserted;
+                    let at = (position + inserted).min(self.manual_queue.len());
+                    self.pending_queue_adds.push(PendingQueueAdd {
+                        item: item.clone(),
+                        at: Instant::now(),
+                        manual_index: at,
+                        write: None,
+                    });
                     if let Loadable::Loaded(queue) = &mut self.queue {
                         queue.queue.insert(at.min(queue.queue.len()), item);
                     }
-                    self.manual_queue
-                        .insert(at.min(self.manual_queue.len()), uri);
+                    self.manual_queue.insert(at, uri);
                     inserted += 1;
                 }
                 if inserted > 0 {
