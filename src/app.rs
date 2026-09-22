@@ -321,6 +321,9 @@ pub struct App {
     queue_cleared: Option<(std::collections::HashSet<String>, Instant)>,
     /// Upcoming context order before shuffle was toggled, used to detect lagging responses.
     queue_shuffle_pending: Option<QueueShufflePending>,
+    /// When a local reorder or positional insert last landed, used to
+    /// reject a fetch whose queued rows still show the pre-move order.
+    queue_reorder_pending: Option<Instant>,
     /// What the window's title bar says, as last set.
     window_title: String,
 
@@ -731,6 +734,7 @@ impl App {
             queue_stale_retries: 0,
             queue_cleared: None,
             queue_shuffle_pending: None,
+            queue_reorder_pending: None,
             window_title: String::new(),
             library: Library::default(),
             liked_songs: crate::liked::LikedSongs::default(),
@@ -2017,6 +2021,7 @@ impl App {
         self.saved_writes.clear();
         self.queue = Loadable::NotLoaded;
         self.queue_shuffle_pending = None;
+        self.queue_reorder_pending = None;
         self.devices.clear();
         self.control_devices_stale = true;
         self.devices_fetched_at = None;
@@ -4327,6 +4332,19 @@ impl App {
                 return true;
             }
         }
+        // A local reorder or positional insert is optimistic; reject a
+        // fetch whose queued rows have not caught up to it yet.
+        if let Some(at) = self.queue_reorder_pending
+            && at.elapsed() < PLAYBACK_HOLD
+            && !fetched
+                .queue
+                .iter()
+                .take(self.manual_queue.len())
+                .map(|item| item.uri())
+                .eq(self.manual_queue.iter().map(String::as_str))
+        {
+            return true;
+        }
         false
     }
 
@@ -4777,6 +4795,7 @@ impl App {
                 if result.is_ok() {
                     self.queue_cleared = None;
                     self.queue_shuffle_pending = None;
+                    self.queue_reorder_pending = None;
                 }
                 self.queue = Loadable::from_result(result);
                 self.reconcile_pending_queue();
@@ -7150,6 +7169,10 @@ impl App {
                 self.backend.player(PlayerCommand::AddToQueue(uri));
             }
         }
+        // Drop any queue fetch already in flight: it was asked for before
+        // the move and would otherwise land with the pre-move order.
+        self.queue_seq += 1;
+        self.queue_reorder_pending = Some(Instant::now());
         self.queue_recheck_at = Some(Instant::now() + QUEUE_RECHECK);
     }
 
@@ -13229,6 +13252,109 @@ mod tests {
             "remote shuffle preserves hand-queued songs and updates context rows"
         );
         assert_eq!(app.queued_rows_len(), 1);
+    }
+
+    /// A queue fetch already in flight before a local reorder must not be
+    /// allowed to land afterwards and undo it. Once resynced with the local
+    /// engine, a fresh fetch still reporting the pre-drag order is likewise
+    /// rejected as stale until it catches up.
+    #[test]
+    fn stale_queue_response_after_local_reorder_does_not_undo_it() {
+        let mut app = headless_app();
+        app.auth = AuthStatus::Connected {
+            username: "alice".into(),
+        };
+        app.local_ready = true;
+        app.local.track = Some(crate::player::LocalTrack {
+            uri: "spotify:track:playing".into(),
+            ..Default::default()
+        });
+        app.local.playback = Playback::Playing;
+        app.manual_queue = vec![
+            "spotify:track:manual1".into(),
+            "spotify:track:manual2".into(),
+        ];
+        app.queue = loaded_queue(
+            "spotify:track:playing",
+            &[
+                "spotify:track:manual1",
+                "spotify:track:manual2",
+                "spotify:track:ctx1",
+            ],
+        );
+
+        // A periodic refresh is already in flight before the drag lands.
+        app.refresh_queue(true);
+        let outstanding_seq = app.queue_seq;
+
+        let ctx = egui::Context::default();
+        app.apply(Action::MoveInQueue { from: 0, to: 2 }, &ctx);
+
+        let reordered = vec![
+            "spotify:track:manual2".to_string(),
+            "spotify:track:manual1".to_string(),
+            "spotify:track:ctx1".to_string(),
+        ];
+        assert_eq!(
+            queue_uris(&app).1,
+            reordered,
+            "the reorder is applied optimistically"
+        );
+
+        // The request that was already outstanding lands after the move,
+        // still reporting the pre-drag order. It must be superseded.
+        let pre_drag_response = Queue {
+            currently_playing: Some(queued_song("spotify:track:playing")),
+            queue: vec![
+                queued_song("spotify:track:manual1"),
+                queued_song("spotify:track:manual2"),
+                queued_song("spotify:track:ctx1"),
+            ],
+        };
+        app.handle_api(ApiResponse::Queue {
+            seq: outstanding_seq,
+            result: Ok(pre_drag_response.clone()),
+        });
+        assert_eq!(
+            queue_uris(&app).1,
+            reordered,
+            "a late pre-drag response must not undo the move"
+        );
+
+        // A fresh fetch, issued after the move, still reports the pre-drag
+        // order because the local engine has not caught up to the resync
+        // yet. It is rejected as stale rather than accepted.
+        app.queue_recheck_at = None;
+        app.refresh_queue(true);
+        let seq = app.queue_seq;
+        app.handle_api(ApiResponse::Queue {
+            seq,
+            result: Ok(pre_drag_response),
+        });
+        assert_eq!(
+            queue_uris(&app).1,
+            reordered,
+            "a lagging fresh response must not undo the move either"
+        );
+        assert_eq!(app.queue_stale_retries, 1);
+        assert!(app.queue_recheck_at.is_some());
+
+        // Once the resync has landed, the confirmed order is accepted.
+        let resynced_response = Queue {
+            currently_playing: Some(queued_song("spotify:track:playing")),
+            queue: vec![
+                queued_song("spotify:track:manual2"),
+                queued_song("spotify:track:manual1"),
+                queued_song("spotify:track:ctx1"),
+            ],
+        };
+        app.handle_api(ApiResponse::Queue {
+            seq,
+            result: Ok(resynced_response),
+        });
+        assert_eq!(app.queue_stale_retries, 0);
+        assert!(app.queue_reorder_pending.is_none());
+        assert_eq!(queue_uris(&app).1, reordered);
     }
 
     /// A stale queue answer whose current track does not match the active
