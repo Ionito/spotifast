@@ -5470,6 +5470,102 @@ mod tests {
         app.backend.shutdown();
     }
 
+    /// If the playing song advances (consuming the front queued row) while a
+    /// queued row is mid-drag, the drop must still act on the song that was
+    /// actually picked up, not on whatever now sits at the drag's recorded
+    /// start index.
+    #[test]
+    fn dragging_a_queued_row_while_next_advances_moves_the_dragged_song() {
+        let (ctx, mut app) = accessible_app("queue-reorder-mid-drag-advance");
+        app.show_queue_panel = true;
+        let uris = seed_queued_songs(&mut app);
+        for _ in 0..3 {
+            frame_events(&ctx, &mut app, vec![]);
+        }
+        let tree = accessible_frame(&ctx, &mut app, vec![]);
+        let row_rect = |name: &str| {
+            let prefix = format!("Play {name},");
+            let bounds = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| {
+                    node.role() == egui::accesskit::Role::Button
+                        && node.label().is_some_and(|text| text.starts_with(&prefix))
+                })
+                .unwrap_or_else(|| panic!("missing row {name}"))
+                .1
+                .bounds()
+                .unwrap();
+            egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+            )
+        };
+        // "Queued 1" is dragged; row 0's slot is the drop target, captured
+        // now so the drop still lands there once row 0 shifts up.
+        let start_row = row_rect("Queued 1");
+        let start = egui::pos2(start_row.left() + 80.0, start_row.center().y);
+        let front_slot = row_rect("Queued 0");
+        let end = egui::pos2(front_slot.left() + 130.0, front_slot.top() + 1.0);
+
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(start + egui::vec2(15.0, -10.0))],
+        );
+        let payload =
+            egui::DragAndDrop::payload::<DragTrack>(&ctx).expect("a reorderable queue row drags");
+        assert_eq!(
+            payload.from,
+            Some(("queue".to_string(), 1)),
+            "the queue row must tag itself as the move source"
+        );
+
+        // "Next" fires mid-drag: the front queued row is consumed and every
+        // later row's index shifts down by one, so index 1 (the recorded
+        // drag source) now names "Queued 2" instead of the dragged song.
+        app.manual_queue.remove(0);
+        if let Loadable::Loaded(queue) = &mut app.queue {
+            queue.queue.remove(0);
+        }
+
+        frame_events(&ctx, &mut app, vec![egui::Event::PointerMoved(end)]);
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+
+        // The dragged song ("Queued 1") had already shifted to the front on
+        // its own; dropping it back on the front slot is a no-op. Trusting
+        // the stale index 1 would instead have moved "Queued 2" (the wrong
+        // song) to the front.
+        assert_eq!(
+            app.manual_queue,
+            vec![uris[1].clone(), uris[2].clone()],
+            "the dragged song stays put instead of the wrong row moving"
+        );
+        app.backend.shutdown();
+    }
+
     /// Dropping a song from elsewhere at a specific row in "Playing next"
     /// inserts it there instead of always appending at the end.
     #[test]

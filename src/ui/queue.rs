@@ -362,8 +362,22 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
                 match track.from.as_ref() {
                     Some((origin, from)) if origin == "queue" => {
                         let from = *from as usize;
+                        let uri = track.items[0].uri();
+                        // Playback can advance mid-drag and shift queue
+                        // indices; trust the recorded one only if it still
+                        // names the dragged song, otherwise find where that
+                        // song actually sits now. Not there at all means it
+                        // left the queue, so there is nothing left to move.
+                        let from = if app.manual_queue.get(from).map(String::as_str) == Some(uri) {
+                            Some(from)
+                        } else {
+                            app.manual_queue.iter().position(|queued| queued == uri)
+                        };
                         // A row dropped back on its own edges moves nothing.
-                        if slot != from && slot != from + 1 {
+                        if let Some(from) = from
+                            && slot != from
+                            && slot != from + 1
+                        {
                             app.actions.push(Action::MoveInQueue { from, to: slot });
                         }
                     }
