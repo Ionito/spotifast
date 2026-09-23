@@ -5686,6 +5686,97 @@ mod tests {
         app.backend.shutdown();
     }
 
+    /// Holding a dragged queue row at the bottom edge of the open queue
+    /// scrolls it, as the playlist table does, so a row can be moved past
+    /// the rows that fit on screen.
+    #[test]
+    fn dragging_a_queued_row_scrolls_a_long_playing_next() {
+        use egui::accesskit::Role;
+        let (ctx, mut app) = accessible_app("queue-drag-scroll");
+        app.show_queue_panel = true;
+        seed_queued_songs(&mut app);
+        let songs: Vec<Track> = (3..40)
+            .map(|index| {
+                let mut t = track(index);
+                t.uri = format!("spotify:track:queued{index}");
+                t.id = Some(format!("queued{index}"));
+                t.name = format!("Queued {index}");
+                t
+            })
+            .collect();
+        if let Loadable::Loaded(queue) = &mut app.queue {
+            for (offset, song) in songs.iter().enumerate() {
+                queue
+                    .queue
+                    .insert(3 + offset, PlayableItem::Track(song.clone()));
+            }
+        }
+        app.manual_queue
+            .extend(songs.iter().map(|song| song.uri.clone()));
+        let uris = app.manual_queue.clone();
+        let on_screen = |tree: &egui::accesskit::TreeUpdate, name: &str| {
+            let prefix = format!("Play {name},");
+            tree.nodes.iter().find_map(|(_, node)| {
+                (node.role() == Role::Button
+                    && node.label().is_some_and(|text| text.starts_with(&prefix)))
+                .then(|| node.bounds())
+                .flatten()
+                .filter(|bounds| bounds.x0 >= 900.0)
+            })
+        };
+        for _ in 0..3 {
+            frame_events(&ctx, &mut app, vec![]);
+        }
+        let tree = accessible_frame(&ctx, &mut app, vec![]);
+        assert!(
+            on_screen(&tree, "Queued 39").is_none(),
+            "the last queued row starts out of view"
+        );
+        let first = on_screen(&tree, "Queued 0").expect("the first queued row is shown");
+        let start = egui::pos2(first.x0 as f32 + 80.0, ((first.y0 + first.y1) / 2.0) as f32);
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(start + egui::vec2(15.0, -10.0))],
+        );
+        egui::DragAndDrop::payload::<DragTrack>(&ctx).expect("a reorderable queue row drags");
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(egui::pos2(
+                start.x,
+                800.0 - crate::theme::PLAYER_BAR_HEIGHT - 14.0,
+            ))],
+        );
+        for _ in 0..400 {
+            frame_events(&ctx, &mut app, vec![]);
+        }
+        let tree = accessible_frame(&ctx, &mut app, vec![]);
+        assert!(
+            on_screen(&tree, "Queued 39").is_some(),
+            "holding the drag at the bottom edge scrolls Playing next into view"
+        );
+        assert_eq!(
+            app.manual_queue, uris,
+            "scrolling alone must not reorder rows"
+        );
+        egui::DragAndDrop::clear_payload(&ctx);
+        app.backend.shutdown();
+    }
+
     /// With nothing manually queued yet, every row the open queue shows
     /// belongs to "Next up", so the panel offers no drop target at all:
     /// neither a Next up row nor its heading takes a dragged song. The
