@@ -7925,6 +7925,18 @@ impl App {
                     let uri = self.manual_queue.remove(from);
                     let at = (if to > from { to - 1 } else { to }).min(self.manual_queue.len());
                     self.manual_queue.insert(at, uri);
+                    // Pending additions are tracked by manual_queue index;
+                    // shift them the same way the move just shifted the row
+                    // they point at, or they end up naming a different song.
+                    for addition in &mut self.pending_queue_adds {
+                        if addition.manual_index == from {
+                            addition.manual_index = at;
+                        } else if from < addition.manual_index && addition.manual_index <= at {
+                            addition.manual_index -= 1;
+                        } else if at <= addition.manual_index && addition.manual_index < from {
+                            addition.manual_index += 1;
+                        }
+                    }
                 }
                 self.session_dirty = true;
                 self.resync_local_queue();
@@ -7950,6 +7962,14 @@ impl App {
                     }
                     let uri = item.uri().to_string();
                     let at = (position + inserted).min(self.manual_queue.len());
+                    // Inserting here shifts every later manual_queue row
+                    // right by one; keep pending additions pointing at their
+                    // own song rather than the one now sitting in their slot.
+                    for addition in &mut self.pending_queue_adds {
+                        if addition.manual_index >= at {
+                            addition.manual_index += 1;
+                        }
+                    }
                     self.pending_queue_adds.push(PendingQueueAdd {
                         item: item.clone(),
                         at: Instant::now(),
@@ -13359,6 +13379,126 @@ mod tests {
         assert_eq!(app.queue_stale_retries, 0);
         assert!(app.queue_reorder_pending.is_none());
         assert_eq!(queue_uris(&app).1, reordered);
+    }
+
+    /// Moving a queued row must keep every pending addition pointing at its
+    /// own song, not whichever row now sits in its old `manual_queue` slot.
+    #[test]
+    fn moving_a_queued_row_keeps_pending_additions_on_their_own_song() {
+        let mut app = headless_app();
+        app.auth = AuthStatus::Connected {
+            username: "alice".into(),
+        };
+        app.local_ready = true;
+        app.local.track = Some(crate::player::LocalTrack {
+            uri: "spotify:track:playing".into(),
+            ..Default::default()
+        });
+        app.local.playback = Playback::Playing;
+        app.manual_queue = vec![
+            "spotify:track:m0".into(),
+            "spotify:track:m1".into(),
+            "spotify:track:m2".into(),
+        ];
+        app.queue = loaded_queue(
+            "spotify:track:playing",
+            &["spotify:track:m0", "spotify:track:m1", "spotify:track:m2"],
+        );
+        app.pending_queue_adds = vec![
+            PendingQueueAdd {
+                item: queued_song("spotify:track:m0"),
+                at: Instant::now(),
+                manual_index: 0,
+                write: None,
+            },
+            PendingQueueAdd {
+                item: queued_song("spotify:track:m1"),
+                at: Instant::now(),
+                manual_index: 1,
+                write: None,
+            },
+            PendingQueueAdd {
+                item: queued_song("spotify:track:m2"),
+                at: Instant::now(),
+                manual_index: 2,
+                write: None,
+            },
+        ];
+
+        let ctx = egui::Context::default();
+        // Drag "m0" past the end: it lands last, "m1" and "m2" each shift up one.
+        app.apply(Action::MoveInQueue { from: 0, to: 3 }, &ctx);
+
+        assert_eq!(
+            app.manual_queue,
+            ["spotify:track:m1", "spotify:track:m2", "spotify:track:m0"]
+        );
+        assert_eq!(app.pending_queue_adds.len(), 3);
+        for addition in &app.pending_queue_adds {
+            assert_eq!(
+                app.manual_queue[addition.manual_index],
+                addition.item.uri(),
+                "pending addition must still name the song at its own index"
+            );
+        }
+    }
+
+    /// Inserting a dropped song into "Playing next" must keep every earlier
+    /// pending addition pointing at its own song, not the newly inserted row.
+    #[test]
+    fn inserting_in_queue_keeps_pending_additions_on_their_own_song() {
+        let mut app = headless_app();
+        app.auth = AuthStatus::Connected {
+            username: "alice".into(),
+        };
+        app.local_ready = true;
+        app.local.track = Some(crate::player::LocalTrack {
+            uri: "spotify:track:playing".into(),
+            ..Default::default()
+        });
+        app.local.playback = Playback::Playing;
+        app.manual_queue = vec!["spotify:track:m0".into(), "spotify:track:m1".into()];
+        app.queue = loaded_queue(
+            "spotify:track:playing",
+            &["spotify:track:m0", "spotify:track:m1"],
+        );
+        app.pending_queue_adds = vec![
+            PendingQueueAdd {
+                item: queued_song("spotify:track:m0"),
+                at: Instant::now(),
+                manual_index: 0,
+                write: None,
+            },
+            PendingQueueAdd {
+                item: queued_song("spotify:track:m1"),
+                at: Instant::now(),
+                manual_index: 1,
+                write: None,
+            },
+        ];
+
+        let ctx = egui::Context::default();
+        // Drop "new" between "m0" and "m1": "m1"'s pending entry must shift.
+        app.apply(
+            Action::InsertInQueue {
+                items: vec![queued_song("spotify:track:new")],
+                position: 1,
+            },
+            &ctx,
+        );
+
+        assert_eq!(
+            app.manual_queue,
+            ["spotify:track:m0", "spotify:track:new", "spotify:track:m1"]
+        );
+        assert_eq!(app.pending_queue_adds.len(), 3);
+        for addition in &app.pending_queue_adds {
+            assert_eq!(
+                app.manual_queue[addition.manual_index],
+                addition.item.uri(),
+                "pending addition must still name the song at its own index"
+            );
+        }
     }
 
     /// A stale queue answer whose current track does not match the active
