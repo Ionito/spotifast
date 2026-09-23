@@ -5669,6 +5669,106 @@ mod tests {
         app.backend.shutdown();
     }
 
+    /// With nothing manually queued yet, "Playing next" has no rows of its
+    /// own, so the empty section's drop zone must still stop short of "Next
+    /// up" below it rather than covering the whole scrollable list.
+    #[test]
+    fn dropping_a_song_on_next_up_with_an_empty_playing_next_does_nothing() {
+        let (ctx, mut app) = accessible_app("queue-empty-playing-next-not-a-target");
+        app.show_queue_panel = true;
+        // Make the local player the active target, like `seed_queued_songs`,
+        // but leave "Playing next" empty so the drop zone under test is the
+        // fallback slot, not the per-row hit test.
+        app.local_ready = true;
+        app.local.track = Some(crate::player::LocalTrack {
+            uri: app.now_playing().unwrap().uri,
+            ..Default::default()
+        });
+        app.local.playback = crate::player::Playback::Paused;
+        assert!(app.manual_queue.is_empty());
+
+        let source_uri = app
+            .queue
+            .get()
+            .unwrap()
+            .currently_playing
+            .clone()
+            .unwrap()
+            .uri()
+            .to_string();
+
+        for _ in 0..3 {
+            frame_events(&ctx, &mut app, vec![]);
+        }
+        let tree = accessible_frame(&ctx, &mut app, vec![]);
+        // "Otomo" is the first row of the default demo queue's "Next up".
+        // It is also a demo library track shown elsewhere on the page
+        // behind the queue side panel, so match on the queue panel's own
+        // on-screen column (it opens flush against the right edge) rather
+        // than the first node with a matching label.
+        let bounds = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == egui::accesskit::Role::Button
+                    && node
+                        .label()
+                        .is_some_and(|text| text.starts_with("Play Otomo,"))
+                    && node
+                        .bounds()
+                        .is_some_and(|bounds| bounds.x0 >= 900.0 && bounds.y1 <= 800.0)
+            })
+            .unwrap_or_else(|| panic!("missing on-screen queue row Otomo"))
+            .1
+            .bounds()
+            .unwrap();
+        let end = egui::pos2(
+            bounds.x0 as f32 + 130.0,
+            (bounds.y0 + bounds.y1) as f32 / 2.0,
+        );
+
+        let start = egui::pos2(40.0, 755.0);
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(start + egui::vec2(20.0, -10.0))],
+        );
+        let payload = egui::DragAndDrop::payload::<DragTrack>(&ctx)
+            .expect("dragging the now-playing song should create a payload");
+        assert_eq!(payload.items[0].uri(), source_uri);
+
+        frame_events(&ctx, &mut app, vec![egui::Event::PointerMoved(end)]);
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+
+        assert!(
+            app.manual_queue.is_empty(),
+            "Next up is never a drop target, even when Playing next has no rows of its own"
+        );
+        app.backend.shutdown();
+    }
+
     /// Dropping a song from elsewhere at a specific row in "Playing next"
     /// inserts it there instead of always appending at the end.
     #[test]

@@ -401,13 +401,23 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
             }
         }
         ui.add_space(14.0);
-    } else if reorderable && let Some(track) = queue_drop(ui, ui.clip_rect()) {
+    } else if reorderable {
         // Nothing manually queued yet, so there is no row to position
-        // against: the only slot is the first one.
-        app.actions.push(Action::InsertInQueue {
-            items: track.items.clone(),
-            position: 0,
-        });
+        // against: the only slot is the first one. Bound the drop zone to
+        // where that row would sit rather than the whole scroll area, which
+        // also covers "Next up" below and is never a drop target.
+        let gap = ui.spacing().item_spacing.y;
+        let list_top = ui.cursor().top();
+        let first_slot_rect = egui::Rect::from_min_max(
+            egui::pos2(ui.clip_rect().left(), list_top),
+            egui::pos2(ui.clip_rect().right(), list_top + 0.5 * (row_height + gap)),
+        );
+        if let Some(track) = queue_drop(ui, first_slot_rect) {
+            app.actions.push(Action::InsertInQueue {
+                items: track.items.clone(),
+                position: 0,
+            });
+        }
     }
     if queue_len > queued_len {
         // Translators: Upcoming songs from the current playlist or album, after manually queued songs.
