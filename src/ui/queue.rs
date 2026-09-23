@@ -317,6 +317,9 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
             });
         });
         ui.add_space(4.0);
+        if reorderable && egui::DragAndDrop::has_payload_of_type::<DragTrack>(ui.ctx()) {
+            widgets::scroll_during_drag(ui);
+        }
         let gap = ui.spacing().item_spacing.y;
         // Calculate the nearest drop slot from fixed row height because
         // virtualized rows are not all available during drawing.
