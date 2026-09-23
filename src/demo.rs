@@ -5628,57 +5628,75 @@ mod tests {
         // "Otomo" is the first row of "Next up", from the default demo
         // queue past the three manually queued rows seeded above.
         let next_up_row = row_rect("Otomo");
-        let end = egui::pos2(next_up_row.left() + 130.0, next_up_row.center().y);
+        // The "Next up" heading sits just below Playing next's last row.
+        let heading = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Next up") || node.value() == Some("Next up"))
+            .and_then(|(_, node)| node.bounds())
+            .expect("the Next up heading");
+        let heading = egui::Rect::from_min_max(
+            egui::pos2(heading.x0 as f32, heading.y0 as f32),
+            egui::pos2(heading.x1 as f32, heading.y1 as f32),
+        );
 
-        frame_events(
-            &ctx,
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(start),
-                egui::Event::PointerButton {
-                    pos: start,
+        for end in [
+            egui::pos2(next_up_row.left() + 130.0, next_up_row.center().y),
+            egui::pos2(heading.left() + 130.0, heading.center().y),
+            egui::pos2(heading.left() + 130.0, heading.top() + 1.0),
+        ] {
+            frame_events(
+                &ctx,
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(start),
+                    egui::Event::PointerButton {
+                        pos: start,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            frame_events(
+                &ctx,
+                &mut app,
+                vec![egui::Event::PointerMoved(start + egui::vec2(15.0, -10.0))],
+            );
+            egui::DragAndDrop::payload::<DragTrack>(&ctx).expect("a reorderable queue row drags");
+
+            frame_events(&ctx, &mut app, vec![egui::Event::PointerMoved(end)]);
+            frame_events(
+                &ctx,
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos: end,
                     button: egui::PointerButton::Primary,
-                    pressed: true,
+                    pressed: false,
                     modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
-        frame_events(
-            &ctx,
-            &mut app,
-            vec![egui::Event::PointerMoved(start + egui::vec2(15.0, -10.0))],
-        );
-        egui::DragAndDrop::payload::<DragTrack>(&ctx).expect("a reorderable queue row drags");
+                }],
+            );
+            frame_events(&ctx, &mut app, vec![]);
 
-        frame_events(&ctx, &mut app, vec![egui::Event::PointerMoved(end)]);
-        frame_events(
-            &ctx,
-            &mut app,
-            vec![egui::Event::PointerButton {
-                pos: end,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
-        );
-
-        assert_eq!(
-            app.manual_queue, uris,
-            "Next up is never a drop target: nothing moves or gets inserted"
-        );
+            assert_eq!(
+                app.manual_queue, uris,
+                "Next up is never a drop target: nothing moves or gets inserted (dropped at {end:?})"
+            );
+        }
         app.backend.shutdown();
     }
 
-    /// With nothing manually queued yet, "Playing next" has no rows of its
-    /// own, so the empty section's drop zone must still stop short of "Next
-    /// up" below it rather than covering the whole scrollable list.
+    /// With nothing manually queued yet, every row the open queue shows
+    /// belongs to "Next up", so the panel offers no drop target at all:
+    /// neither a Next up row nor its heading takes a dragged song. The
+    /// player bar's Queue button still does.
     #[test]
     fn dropping_a_song_on_next_up_with_an_empty_playing_next_does_nothing() {
+        use egui::accesskit::Role;
         let (ctx, mut app) = accessible_app("queue-empty-playing-next-not-a-target");
         app.show_queue_panel = true;
         // Make the local player the active target, like `seed_queued_songs`,
-        // but leave "Playing next" empty so the drop zone under test is the
-        // fallback slot, not the per-row hit test.
+        // but leave "Playing next" empty.
         app.local_ready = true;
         app.local.track = Some(crate::player::LocalTrack {
             uri: app.now_playing().unwrap().uri,
@@ -5686,6 +5704,7 @@ mod tests {
         });
         app.local.playback = crate::player::Playback::Paused;
         assert!(app.manual_queue.is_empty());
+        assert!(app.queue_locally_reorderable());
 
         let source_uri = app
             .queue
@@ -5701,16 +5720,30 @@ mod tests {
             frame_events(&ctx, &mut app, vec![]);
         }
         let tree = accessible_frame(&ctx, &mut app, vec![]);
+        let bounds_of = |id: egui::accesskit::NodeId| {
+            let bounds = tree
+                .nodes
+                .iter()
+                .find(|(node, _)| *node == id)
+                .unwrap()
+                .1
+                .bounds()
+                .unwrap();
+            egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+            )
+        };
         // "Otomo" is the first row of the default demo queue's "Next up".
         // It is also a demo library track shown elsewhere on the page
         // behind the queue side panel, so match on the queue panel's own
         // on-screen column (it opens flush against the right edge) rather
         // than the first node with a matching label.
-        let bounds = tree
+        let row = tree
             .nodes
             .iter()
             .find(|(_, node)| {
-                node.role() == egui::accesskit::Role::Button
+                node.role() == Role::Button
                     && node
                         .label()
                         .is_some_and(|text| text.starts_with("Play Otomo,"))
@@ -5719,52 +5752,85 @@ mod tests {
                         .is_some_and(|bounds| bounds.x0 >= 900.0 && bounds.y1 <= 800.0)
             })
             .unwrap_or_else(|| panic!("missing on-screen queue row Otomo"))
-            .1
-            .bounds()
-            .unwrap();
-        let end = egui::pos2(
-            bounds.x0 as f32 + 130.0,
-            (bounds.y0 + bounds.y1) as f32 / 2.0,
-        );
+            .0;
+        let row = bounds_of(row);
+        let heading = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Next up") || node.value() == Some("Next up"))
+            .expect("the Next up heading")
+            .0;
+        let heading = bounds_of(heading);
+        // The player bar's Queue button, not the queue panel's Queue tab.
+        let button = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == Role::Button
+                    && node.label() == Some("Queue")
+                    && node.bounds().is_some_and(|bounds| {
+                        bounds.y0 >= f64::from(800.0 - crate::theme::PLAYER_BAR_HEIGHT)
+                    })
+            })
+            .expect("the player bar's Queue button")
+            .0;
+        let button = bounds_of(button);
 
-        let start = egui::pos2(40.0, 755.0);
-        frame_events(
-            &ctx,
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(start),
-                egui::Event::PointerButton {
-                    pos: start,
+        let drag_to = |app: &mut App, end: egui::Pos2| {
+            let start = egui::pos2(40.0, 755.0);
+            frame_events(
+                &ctx,
+                app,
+                vec![
+                    egui::Event::PointerMoved(start),
+                    egui::Event::PointerButton {
+                        pos: start,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            frame_events(
+                &ctx,
+                app,
+                vec![egui::Event::PointerMoved(start + egui::vec2(20.0, -10.0))],
+            );
+            let payload = egui::DragAndDrop::payload::<DragTrack>(&ctx)
+                .expect("dragging the now-playing song should create a payload");
+            assert_eq!(payload.items[0].uri(), source_uri);
+            frame_events(&ctx, app, vec![egui::Event::PointerMoved(end)]);
+            frame_events(
+                &ctx,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos: end,
                     button: egui::PointerButton::Primary,
-                    pressed: true,
+                    pressed: false,
                     modifiers: egui::Modifiers::NONE,
-                },
-            ],
-        );
-        frame_events(
-            &ctx,
-            &mut app,
-            vec![egui::Event::PointerMoved(start + egui::vec2(20.0, -10.0))],
-        );
-        let payload = egui::DragAndDrop::payload::<DragTrack>(&ctx)
-            .expect("dragging the now-playing song should create a payload");
-        assert_eq!(payload.items[0].uri(), source_uri);
+                }],
+            );
+            frame_events(&ctx, app, vec![]);
+        };
 
-        frame_events(&ctx, &mut app, vec![egui::Event::PointerMoved(end)]);
-        frame_events(
-            &ctx,
-            &mut app,
-            vec![egui::Event::PointerButton {
-                pos: end,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
-        );
+        for end in [
+            egui::pos2(row.left() + 130.0, row.center().y),
+            egui::pos2(row.left() + 130.0, row.top() + 2.0),
+            heading.center(),
+            egui::pos2(heading.left() + 130.0, heading.top() - 2.0),
+        ] {
+            drag_to(&mut app, end);
+            assert!(
+                app.manual_queue.is_empty(),
+                "Next up is never a drop target, even when Playing next has no rows of its own (dropped at {end:?})"
+            );
+        }
 
-        assert!(
-            app.manual_queue.is_empty(),
-            "Next up is never a drop target, even when Playing next has no rows of its own"
+        drag_to(&mut app, button.center());
+        assert_eq!(
+            app.manual_queue,
+            vec![source_uri],
+            "the Queue button still queues the dropped song"
         );
         app.backend.shutdown();
     }

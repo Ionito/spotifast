@@ -137,4 +137,5 @@ counts once, and the notification reports only the rows actually added.
     computer is the active player. Otherwise every drop still just adds to
     the end, exactly like **Add to queue**. *Next up* is never a drop
     target: it plays from the current context, not from a list Spotifast
-    can rewrite.
+    can rewrite. While *Playing next* is empty, drop the song on the player
+    bar's Queue button instead.

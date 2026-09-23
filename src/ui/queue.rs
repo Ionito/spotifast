@@ -177,6 +177,10 @@ fn queue_drop(ui: &egui::Ui, rect: egui::Rect) -> Option<Arc<DragTrack>> {
     }
 }
 
+/// Space below the now-playing row and below Playing next, before the next
+/// section's heading.
+const SECTION_GAP: f32 = 14.0;
+
 fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
     let palette = app.palette;
     // Neither the Web API nor librespot can reorder or insert into a live
@@ -271,7 +275,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
                 picked_songs: &[],
             },
         );
-        ui.add_space(14.0);
+        ui.add_space(SECTION_GAP);
     }
     if queue_is_empty(app) {
         // Nothing queued at all yet: the only slot a drop could land on is
@@ -324,14 +328,14 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
         // Calculate the nearest drop slot from fixed row height because
         // virtualized rows are not all available during drawing.
         let list_top = ui.cursor().top();
-        // Bound the hit test to Playing next's own rows, plus half a row of
-        // trailing slack for the append-at-the-end slot. The scroll area's
+        // Bound the hit test to Playing next's own rows and the space below
+        // them, where the append-at-the-end slot sits. The scroll area's
         // clip rect also covers Next up below, which is never a drop target.
         let section_rect = egui::Rect::from_min_max(
             egui::pos2(ui.clip_rect().left(), list_top),
             egui::pos2(
                 ui.clip_rect().right(),
-                list_top + (queued_len as f32 + 0.5) * (row_height + gap),
+                list_top + queued_len as f32 * (row_height + gap) + SECTION_GAP,
             ),
         );
         let move_slot = reorderable
@@ -403,25 +407,11 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
                 }
             }
         }
-        ui.add_space(14.0);
-    } else if reorderable {
-        // Nothing manually queued yet, so there is no row to position
-        // against: the only slot is the first one. Bound the drop zone to
-        // where that row would sit rather than the whole scroll area, which
-        // also covers "Next up" below and is never a drop target.
-        let gap = ui.spacing().item_spacing.y;
-        let list_top = ui.cursor().top();
-        let first_slot_rect = egui::Rect::from_min_max(
-            egui::pos2(ui.clip_rect().left(), list_top),
-            egui::pos2(ui.clip_rect().right(), list_top + 0.5 * (row_height + gap)),
-        );
-        if let Some(track) = queue_drop(ui, first_slot_rect) {
-            app.actions.push(Action::InsertInQueue {
-                items: track.items.clone(),
-                position: 0,
-            });
-        }
+        ui.add_space(SECTION_GAP);
     }
+    // With Playing next empty, the panel holds no drop target at all: every
+    // row on it belongs to Next up, which plays from the context and is never
+    // rewritten. The player bar's Queue button still takes the drop.
     if queue_len > queued_len {
         // Translators: Upcoming songs from the current playlist or album, after manually queued songs.
         theme::text(
